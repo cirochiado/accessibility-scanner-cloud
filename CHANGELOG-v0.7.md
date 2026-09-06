@@ -10,3 +10,9 @@
 - SSRF guard mantenuta anche sulle richieste browser.
 - Modalità `single_url` e `crawl` mantenute.
 - Dashboard cloud minimale per regression test.
+
+## Deploy validation 2026-09-06
+
+- Rimossa la configurazione di memoria custom dalla Background Function `scan-worker` per compatibilità con il piano Netlify attuale.
+- Configurato `A11Y_API_TOKEN` come secret nel solo contesto Production di Netlify.
+- Redeploy di validazione attivato via commit GitHub prima del regression test cloud.
