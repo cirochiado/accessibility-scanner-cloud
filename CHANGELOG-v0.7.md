@@ -16,3 +16,5 @@
 - Rimossa la configurazione di memoria custom dalla Background Function `scan-worker` per compatibilità con il piano Netlify attuale.
 - Configurato `A11Y_API_TOKEN` come secret nel solo contesto Production di Netlify.
 - Redeploy di validazione attivato via commit GitHub prima del regression test cloud.
+- Impostato `A11Y_BEHAVIOR_MAX_PAGES=8` per eseguire i behavioral checks su tutte le 8 pagine del crawl WDC-013.
+- Forzato un nuovo deploy dopo l'aggiornamento della variabile runtime, così la nuova configurazione viene caricata dalle Netlify Functions.
