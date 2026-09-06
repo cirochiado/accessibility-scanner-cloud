@@ -7,8 +7,8 @@ const IMPACT_WEIGHT = { critical: 28, serious: 18, moderate: 8, minor: 3, unknow
 const BEHAVIOR_WEIGHT = { fail: 18, warning: 6 };
 const ODOO_STATUS = {
   good: { key: 'good', label_it: 'Buona' },
-  review_required: { key: 'attention', label_it: 'Attenzione' },
-  issues_found: { key: 'attention', label_it: 'Attenzione' },
+  review_required: { key: 'issues_found', label_it: 'Problemi rilevati' },
+  issues_found: { key: 'issues_found', label_it: 'Problemi rilevati' },
   critical: { key: 'critical', label_it: 'Critica' },
   blocked: { key: 'blocked', label_it: 'Bloccata' },
 };
