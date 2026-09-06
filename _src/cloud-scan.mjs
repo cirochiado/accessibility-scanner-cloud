@@ -84,7 +84,7 @@ export async function runCloudScan({ url, mode='crawl', max_pages=20, onProgress
 
   const hardMax = Math.max(1, Math.min(50, Number(process.env.A11Y_MAX_PAGES || 20)));
   const maxPages = scanMode === 'single_url' ? 1 : Math.max(1, Math.min(hardMax, Number(max_pages || 20)));
-  const behaviorMax = Math.max(0, Math.min(maxPages, Number(process.env.A11Y_BEHAVIOR_MAX_PAGES || 5)));
+  const behaviorMax = Math.max(0, Math.min(maxPages, Number(process.env.A11Y_BEHAVIOR_MAX_PAGES || 8)));
 
   const browser = await launchBrowser();
   const pages = [];
