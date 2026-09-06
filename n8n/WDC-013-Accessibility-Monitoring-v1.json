@@ -1,0 +1,627 @@
+{
+  "name": "WDC-013 - Accessibility Monitoring",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "814e079a-f232-4aaa-a98c-ef1e08a0baaf",
+      "name": "00A - Manual Reconciliation Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "project_id",
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "id": "9c3f023a-b1e7-42de-a87c-1d155fbddfc7",
+      "name": "00B - Called by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 5,
+              "triggerAtHour": 8,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "id": "696124a1-fd08-43dc-9224-a49b25dc3a5d",
+      "name": "00C - Every 5 Days 08:30",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json ?? {};\nconst hasProjectInput = Object.prototype.hasOwnProperty.call(input, 'project_id');\n\nif (!hasProjectInput) {\n  return [{\n    json: {\n      route: 'reconciliation',\n      project_id: null,\n      scan_mode: 'single_url',\n      max_pages: 1\n    }\n  }];\n}\n\nconst projectId = Number(input.project_id);\nif (!Number.isInteger(projectId) || projectId <= 0) {\n  throw new Error('WDC-013 input non valido: project_id deve essere un intero maggiore di zero');\n}\n\nreturn [{\n  json: {\n    route: 'event',\n    project_id: projectId,\n    scan_mode: 'single_url',\n    max_pages: 1\n  }\n}];"
+      },
+      "id": "c3dbf553-6942-494a-a048-982549dadfc7",
+      "name": "01 - Normalize & Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $json;\nconst isEvent = source.route === 'event';\n\nconst cutoff = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)\n  .toISOString()\n  .slice(0, 19)\n  .replace('T', ' ');\n\nconst domain = [\n  ['active', '=', true],\n  ['x_studio_wdc008_production_url', '!=', false],\n];\n\nif (isEvent) {\n  domain.push(['id', '=', source.project_id]);\n} else {\n  domain.push(\n    '|',\n    ['x_studio_wdc013_last_audit_at', '=', false],\n    ['x_studio_wdc013_last_audit_at', '<=', cutoff],\n  );\n}\n\nreturn [{\n  json: {\n    route: source.route,\n    requested_project_id: source.project_id,\n    scan_mode: source.scan_mode,\n    max_pages: source.max_pages,\n    domain,\n    fields: [\n      'id',\n      'name',\n      'active',\n      'x_studio_wdc008_production_url',\n      'x_studio_wdc013_accessibility_status',\n      'x_studio_wdc013_accessibility_score',\n      'x_studio_wdc013_wcag_issues',\n      'x_studio_wdc013_recommendations',\n      'x_studio_wdc013_last_audit_at',\n      'x_studio_wdc013_report_url',\n      'x_studio_wdc013_hash'\n    ],\n    limit: isEvent ? 1 : 100,\n    order: 'x_studio_wdc013_last_audit_at asc, id asc'\n  }\n}];"
+      },
+      "id": "b2b36139-63c6-4d1a-883b-2878bf3d4f85",
+      "name": "02 - Build Eligible Project Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://web-developer-ciro.odoo.com/json/2/project.project/search_read",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { context: { lang: 'it_IT' }, domain: $json.domain, fields: $json.fields, limit: $json.limit, order: $json.order } }}",
+        "options": {}
+      },
+      "id": "768f0aad-f3bf-4b0b-9547-5af7f638199a",
+      "name": "03 - Fetch Eligible Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "gf3qNYgmbOjbsYO6",
+          "name": "Odoo - Ciro Business OS PROD"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const project = $json;\nif (!project?.id) return [];\n\nconst rawUrl = String(project.x_studio_wdc008_production_url || '').trim();\nif (!rawUrl) return [];\n\nlet parsed;\ntry {\n  parsed = new URL(rawUrl);\n} catch {\n  throw new Error(`WDC-013 progetto ${project.id}: URL produzione non valido: ${rawUrl}`);\n}\n\nif (!['http:', 'https:'].includes(parsed.protocol)) {\n  throw new Error(`WDC-013 progetto ${project.id}: protocollo URL non supportato`);\n}\n\nconst origin = $('01 - Normalize & Validate Input').item.json;\n\nreturn [{\n  json: {\n    project_id: project.id,\n    project_name: project.name || `Progetto ${project.id}`,\n    target_url: parsed.toString(),\n    external_ref: `odoo-project-${project.id}`,\n    scan_mode: origin.scan_mode || 'single_url',\n    max_pages: origin.max_pages || 1,\n    previous_hash: project.x_studio_wdc013_hash || null,\n    previous_score: project.x_studio_wdc013_accessibility_score ?? null,\n    previous_last_audit_at: project.x_studio_wdc013_last_audit_at || null\n  }\n}];"
+      },
+      "id": "ed3a5d17-dcf8-4e6b-9761-7c967f6c165f",
+      "name": "04 - Prepare Scanner Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://jazzy-clafoutis-898ba6.netlify.app/api/v1/scans",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { external_ref: $json.external_ref, project_name: $json.project_name, url: $json.target_url, mode: $json.scan_mode, max_pages: $json.max_pages } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "e707a0fb-96e8-4fca-a1ca-eaac43c49db2",
+      "name": "05 - Start Accessibility Scan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1200,
+        240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WDC013_SCANNER_HEADER_AUTH",
+          "name": "WDC-013 Accessibility Scanner Cloud PROD"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json;\nconst source = $('04 - Prepare Scanner Request').item.json;\n\nif (!response?.job_id) {\n  throw new Error('WDC-013: lo scanner non ha restituito job_id');\n}\nif (!['queued', 'running'].includes(String(response.status || ''))) {\n  throw new Error(`WDC-013: stato iniziale scanner inatteso: ${response.status}`);\n}\n\nreturn [{\n  json: {\n    ...response,\n    project_id: source.project_id,\n    project_name: source.project_name,\n    target_url: source.target_url,\n    external_ref: source.external_ref\n  }\n}];"
+      },
+      "id": "608c0aec-5f8d-4145-9a0f-7d4b0b677bf6",
+      "name": "06 - Validate Scan Start",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "e6b4eb33-8650-4926-976c-0693b9cc8dbe",
+      "name": "07 - Wait 10 Seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        240
+      ],
+      "webhookId": "b093f1ef-f299-4796-a5b3-ab33f370dc04"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://jazzy-clafoutis-898ba6.netlify.app/api/v1/jobs/' + $json.job_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "9724469f-3154-468c-a191-6328cf2c288e",
+      "name": "08 - Poll Scan Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1920,
+        240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WDC013_SCANNER_HEADER_AUTH",
+          "name": "WDC-013 Accessibility Scanner Cloud PROD"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const job = $json;\nif (!job?.job_id) throw new Error('WDC-013 polling: job_id mancante');\n\nconst status = String(job.status || '').trim();\n\nif (status === 'completed') {\n  const result = job.result;\n  if (!result || result.schema_version !== 'wdc013.a11y-result.v1') {\n    return [{\n      json: {\n        ...job,\n        status: 'failed',\n        route: 'failed',\n        error: `schema_runtime_non_valido:${result?.schema_version || 'missing'}`\n      }\n    }];\n  }\n\n  const w = result.wdc013;\n  const allowed = new Set(['not_checked', 'good', 'issues_found', 'critical', 'blocked']);\n  if (!w || !allowed.has(String(w.odoo_status_key || ''))) {\n    return [{\n      json: {\n        ...job,\n        status: 'failed',\n        route: 'failed',\n        error: `odoo_status_non_valido:${w?.odoo_status_key || 'missing'}`\n      }\n    }];\n  }\n\n  return [{ json: { ...job, route: 'completed' } }];\n}\n\nif (status === 'failed') {\n  return [{ json: { ...job, route: 'failed' } }];\n}\n\nconst createdAt = Date.parse(job.created_at || '');\nif (Number.isFinite(createdAt) && Date.now() - createdAt > 16 * 60 * 1000) {\n  return [{\n    json: {\n      ...job,\n      status: 'failed',\n      route: 'failed',\n      error: 'poll_timeout_oltre_16_minuti'\n    }\n  }];\n}\n\nif (!['queued', 'running'].includes(status)) {\n  return [{\n    json: {\n      ...job,\n      status: 'failed',\n      route: 'failed',\n      error: `stato_scanner_inatteso:${status || 'missing'}`\n    }\n  }];\n}\n\nreturn [{ json: { ...job, route: 'wait' } }];"
+      },
+      "id": "1d937375-2234-4adb-973e-c16f99836999",
+      "name": "09 - Evaluate Scan Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e9ed72db-1ff8-4c23-8945-61e46783d8e7",
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b22d0dba-7c59-4277-814a-26c3752a6c83",
+      "name": "10A - Scan Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2400,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "9d8a30f0-99e6-4092-975c-e3cdf4ae88fd",
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "failed",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8f3bdfad-d5dd-47ab-8b75-2d1e6439ab88",
+      "name": "10B - Scan Failed or Timed Out?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2640,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const job = $json;\nconst result = job.result;\nconst w = result?.wdc013;\n\nconst ref = String(job.meta?.external_ref || result?.external_ref || '');\nconst match = ref.match(/^odoo-project-(\\d+)$/);\nif (!match) throw new Error(`WDC-013 completed: external_ref non valido: ${ref}`);\n\nconst projectId = Number(match[1]);\nconst odooDateTime = value => {\n  const d = new Date(value);\n  if (Number.isNaN(d.getTime())) throw new Error(`WDC-013: datetime non valido: ${value}`);\n  return d.toISOString().slice(0, 19).replace('T', ' ');\n};\n\nlet issues = String(w.issues_text || '').trim();\nconst score = w.accessibility_score;\n\nconst vals = {\n  x_studio_wdc013_accessibility_status: w.odoo_status_key,\n  x_studio_wdc013_wcag_issues: issues,\n  x_studio_wdc013_recommendations: String(w.recommendations_text || ''),\n  x_studio_wdc013_last_audit_at: odooDateTime(w.last_audit_at || result.generated_at),\n  x_studio_wdc013_report_url: String(w.report_url || result.report?.html_url || ''),\n  x_studio_wdc013_hash: String(w.audit_hash || result.audit_hash || '')\n};\n\nif (Number.isInteger(score) && score >= 0 && score <= 100) {\n  vals.x_studio_wdc013_accessibility_score = score;\n} else {\n  vals.x_studio_wdc013_wcag_issues = [\n    '[WDC-013] Score corrente non conclusivo: il campo Accessibility Score non viene sovrascritto.',\n    issues\n  ].filter(Boolean).join('\\n');\n}\n\nreturn [{\n  json: {\n    project_id: projectId,\n    scanner_status: result.status,\n    audit_hash: vals.x_studio_wdc013_hash,\n    vals\n  }\n}];"
+      },
+      "id": "12cb59c8-497a-4d29-ac81-dfdf8b609f95",
+      "name": "11C - Build Odoo Success Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://web-developer-ciro.odoo.com/json/2/project.project/write",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { context: { lang: 'it_IT' }, ids: [$json.project_id], vals: $json.vals } }}",
+        "options": {}
+      },
+      "id": "67d774e7-9418-46f5-a9bd-0f28f80ef1ff",
+      "name": "12C - Write Accessibility Result to Odoo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3120,
+        160
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "gf3qNYgmbOjbsYO6",
+          "name": "Odoo - Ciro Business OS PROD"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const job = $json;\nconst ref = String(job.meta?.external_ref || job.external_ref || '');\nconst match = ref.match(/^odoo-project-(\\d+)$/);\nif (!match) throw new Error(`WDC-013 failed: external_ref non valido: ${ref}`);\n\nconst projectId = Number(match[1]);\nconst error = String(job.error || 'scanner_failed');\n\nreturn [{\n  json: {\n    project_id: projectId,\n    vals: {\n      x_studio_wdc013_accessibility_status: 'blocked',\n      x_studio_wdc013_wcag_issues: `[WDC-013][SCANNER BLOCKED] ${error}`,\n      x_studio_wdc013_recommendations: 'Verificare il servizio Accessibility Scanner Cloud e rilanciare il controllo. L’ultimo audit riuscito non è stato sovrascritto.'\n    }\n  }\n}];"
+      },
+      "id": "5cc1eb78-97e1-41dd-a175-53dac8dd0544",
+      "name": "11F - Build Odoo Failure Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://web-developer-ciro.odoo.com/json/2/project.project/write",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { context: { lang: 'it_IT' }, ids: [$json.project_id], vals: $json.vals } }}",
+        "options": {}
+      },
+      "id": "bba69c03-49d6-409c-a578-c150e6cc7a41",
+      "name": "12F - Mark Accessibility Blocked in Odoo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3120,
+        480
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "gf3qNYgmbOjbsYO6",
+          "name": "Odoo - Ciro Business OS PROD"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## WDC-013 setup\nPrima del test assegna ai nodi **05 - Start Accessibility Scan** e **08 - Poll Scan Job** una credenziale **HTTP Header Auth**:\n\n- Name: `WDC-013 Accessibility Scanner Cloud PROD`\n- Header name: `Authorization`\n- Header value: `Bearer <A11Y_API_TOKEN>`\n\nIl token NON è incluso nell'export.\n\nIl workflow resta **inactive** fino al test controllato.",
+        "height": 300,
+        "width": 520
+      },
+      "id": "4e88315d-cec8-4c66-a720-3c458f011469",
+      "name": "SETUP - Scanner Credential",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        -120
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "00A - Manual Reconciliation Trigger": {
+      "main": [
+        [
+          {
+            "node": "01 - Normalize & Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "00B - Called by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "01 - Normalize & Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "00C - Every 5 Days 08:30": {
+      "main": [
+        [
+          {
+            "node": "01 - Normalize & Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "01 - Normalize & Validate Input": {
+      "main": [
+        [
+          {
+            "node": "02 - Build Eligible Project Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02 - Build Eligible Project Query": {
+      "main": [
+        [
+          {
+            "node": "03 - Fetch Eligible Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "03 - Fetch Eligible Projects": {
+      "main": [
+        [
+          {
+            "node": "04 - Prepare Scanner Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "04 - Prepare Scanner Request": {
+      "main": [
+        [
+          {
+            "node": "05 - Start Accessibility Scan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "05 - Start Accessibility Scan": {
+      "main": [
+        [
+          {
+            "node": "06 - Validate Scan Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "06 - Validate Scan Start": {
+      "main": [
+        [
+          {
+            "node": "07 - Wait 10 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "07 - Wait 10 Seconds": {
+      "main": [
+        [
+          {
+            "node": "08 - Poll Scan Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "08 - Poll Scan Job": {
+      "main": [
+        [
+          {
+            "node": "09 - Evaluate Scan Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "09 - Evaluate Scan Job": {
+      "main": [
+        [
+          {
+            "node": "10A - Scan Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10A - Scan Completed?": {
+      "main": [
+        [
+          {
+            "node": "11C - Build Odoo Success Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "10B - Scan Failed or Timed Out?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10B - Scan Failed or Timed Out?": {
+      "main": [
+        [
+          {
+            "node": "11F - Build Odoo Failure Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "07 - Wait 10 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11C - Build Odoo Success Payload": {
+      "main": [
+        [
+          {
+            "node": "12C - Write Accessibility Result to Odoo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11F - Build Odoo Failure Payload": {
+      "main": [
+        [
+          {
+            "node": "12F - Mark Accessibility Blocked in Odoo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timezone": "Europe/Rome"
+  },
+  "versionId": "3f95a97c-61b8-4787-92d7-f49d942e0c7d",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
