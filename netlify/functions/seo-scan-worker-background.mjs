@@ -10,11 +10,51 @@ export default async (req)=>{
   if(!auth.ok) throw new Error(auth.error);
 
   const {job_id}=await req.json();
-  const job=await getJson(`seo/jobs/${job_id}.json`);
+  const jobKey=`seo/jobs/${job_id}.json`;
+  const job=await getJson(jobKey);
   if(!job) throw new Error('seo_job_not_found');
 
+  const now=new Date().toISOString();
   job.status='running';
-  await setJson(`seo/jobs/${job_id}.json`,job);
+  job.started_at=job.started_at || now;
+  job.progress={
+    stage:'starting',
+    pages_done:0,
+    max_pages:Number(job.meta?.max_pages || 0) || null,
+    current_url:job.meta?.url || null,
+    current_status:null,
+    queued:null,
+    updated_at:now,
+  };
+  await setJson(jobKey,job);
+
+  let progressWrites=Promise.resolve();
+  const queueProgress=(progress={})=>{
+    job.progress={
+      stage:'scanning',
+      pages_done:Number.isFinite(Number(progress.pages)) ? Number(progress.pages) : (job.progress?.pages_done || 0),
+      max_pages:Number(job.meta?.max_pages || 0) || null,
+      current_url:progress.url || job.progress?.current_url || job.meta?.url || null,
+      current_status:progress.status || null,
+      queued:Number.isFinite(Number(progress.queued)) ? Number(progress.queued) : null,
+      canonical:progress.canonical || null,
+      error:progress.error || null,
+      updated_at:new Date().toISOString(),
+    };
+    const snapshot=JSON.parse(JSON.stringify(job));
+    progressWrites=progressWrites.catch(()=>{}).then(()=>setJson(jobKey,snapshot));
+  };
+
+  const persistStage=async(stage,extra={})=>{
+    await progressWrites.catch(()=>{});
+    job.progress={
+      ...(job.progress || {}),
+      stage,
+      ...extra,
+      updated_at:new Date().toISOString(),
+    };
+    await setJson(jobKey,job);
+  };
 
   try{
     const refKey=crypto.createHash('sha256')
@@ -22,8 +62,14 @@ export default async (req)=>{
       .digest('hex').slice(0,32);
 
     const prev=await getJson(`seo/latest/${refKey}.json`);
-    const scan=await runSeoScan({url:job.meta.url,max_pages:job.meta.max_pages});
+    const scan=await runSeoScan({
+      url:job.meta.url,
+      max_pages:job.meta.max_pages,
+      onProgress:queueProgress,
+    });
+    await progressWrites.catch(()=>{});
 
+    await persistStage('building_result',{pages_done:scan.pages?.length || job.progress?.pages_done || 0});
     const result=buildSeoResult({
       jobId:job_id,
       externalRef:job.meta.external_ref,
@@ -32,9 +78,11 @@ export default async (req)=>{
       baseUrl:job.meta.url
     });
 
+    await persistStage('building_html_report');
     const html=buildSeoHtmlReport(result);
     await setText(`seo/reports/${job_id}.html`,html,{contentType:'text/html; charset=utf-8'});
 
+    await persistStage('building_pdf_report');
     try{
       const pdf=await renderPdfFromHtml(html);
       await setBinary(`seo/reports/${job_id}.pdf`,pdf,{contentType:'application/pdf'});
@@ -45,15 +93,30 @@ export default async (req)=>{
     job.status='completed';
     job.finished_at=new Date().toISOString();
     job.result=result;
+    job.progress={
+      ...(job.progress || {}),
+      stage:'completed',
+      pages_done:scan.pages?.length || job.progress?.pages_done || 0,
+      current_status:'completed',
+      updated_at:job.finished_at,
+    };
 
-    await setJson(`seo/jobs/${job_id}.json`,job);
+    await setJson(jobKey,job);
     await setJson(`seo/latest/${refKey}.json`,{job_id,result});
     await setJson(`seo/history/${refKey}/${job.finished_at}-${job_id}.json`,{job_id,result});
   }catch(e){
+    await progressWrites.catch(()=>{});
     job.status='failed';
     job.finished_at=new Date().toISOString();
     job.error=String(e?.message||e);
-    await setJson(`seo/jobs/${job_id}.json`,job);
+    job.progress={
+      ...(job.progress || {}),
+      stage:'failed',
+      current_status:'failed',
+      error:job.error,
+      updated_at:job.finished_at,
+    };
+    await setJson(jobKey,job);
     throw e;
   }
 };
