@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 export const SEO_RESULT_SCHEMA = 'wdc014.seo-result.v1';
-export const SEO_SCANNER_VERSION = '0.2.0-netlify';
+export const SEO_SCANNER_VERSION = '0.3.0-netlify';
 
 const SEVERITY_WEIGHT = { critical:30, high:12, medium:5, low:2 };
 const STATUS = {
@@ -271,7 +271,7 @@ export function buildSeoResult({jobId,externalRef=null,scan,previousResult=null,
     );
     penalty += perRule;
   }
-  const score = clamp(100-penalty,0,100);
+  let score = clamp(100-penalty,0,100);
 
   const homepageBlocked = groups.some(g=>g.id==='homepage-blocked');
   const critical = groups.some(g=>g.severity==='critical');
@@ -279,6 +279,7 @@ export function buildSeoResult({jobId,externalRef=null,scan,previousResult=null,
   if (homepageBlocked) status='blocked';
   else if (critical || score < 50) status='critical';
   else if (groups.length) status='opportunities';
+  if (status === 'blocked') score = 0;
 
   const currentFp = new Set(issues.map(x=>x.fingerprint));
   let diff={comparable:false,new_count:0,resolved_count:0};
