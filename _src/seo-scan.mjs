@@ -332,6 +332,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
         }
 
         rec.final_url = normalizeSeoUrl(page.url(), page.url()) || page.url();
+        seen.add(rec.final_url);
         rec.http_status = response?.status() ?? null;
         if (rec.http_status != null && rec.http_status >= 400) rec.error = `HTTP ${rec.http_status}`;
 
@@ -358,18 +359,27 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
             : rec.final_url;
 
           const prior = canonicalSeen.get(rec.canonical_key);
-          if (prior && prior !== rec.final_url) {
-            aliases.push({
-              url:rec.final_url,
-              canonical:rec.canonical_key,
-              duplicate_of:prior,
-              http_status:rec.http_status,
-              source:rec.source,
-              depth:rec.depth,
-            });
+          if (prior) {
+            const sameFinalUrl = prior === rec.final_url;
+            if (!sameFinalUrl) {
+              aliases.push({
+                url:rec.final_url,
+                canonical:rec.canonical_key,
+                duplicate_of:prior,
+                http_status:rec.http_status,
+                source:rec.source,
+                depth:rec.depth,
+              });
+            }
             const aliasInbound = inbound.get(rec.final_url) || 0;
             if (aliasInbound) inbound.set(rec.canonical_key, (inbound.get(rec.canonical_key) || 0) + aliasInbound);
-            onProgress({url:current,status:'alias',canonical:rec.canonical_key,pages:pages.length,queued:queue.length});
+            onProgress({
+              url:current,
+              status:sameFinalUrl ? 'duplicate' : 'alias',
+              canonical:rec.canonical_key,
+              pages:pages.length,
+              queued:queue.length,
+            });
             continue;
           }
           canonicalSeen.set(rec.canonical_key, rec.final_url);
