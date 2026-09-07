@@ -24,3 +24,4 @@
 - Aggiunta API separata `/api/v1/seo/*` con contratto `wdc014.seo-result.v1`.
 - Aggiunti crawl SEO tecnico, robots/sitemap, metadata on-page, report HTML/PDF e storico separato nei Netlify Blobs.
 - WDC-013 resta isolato e invariato.
+- 2026-09-07: nuovo commit di redeploy dopo rinnovo crediti Netlify, per pubblicare le Functions WDC-014 insieme a WDC-013.
