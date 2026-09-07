@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fixture SEO stabile per WDC-014</title>
+  <meta name="description" content="Fixture SEO deterministica per validare in modo stabile gli stati healthy e issues_found del workflow WDC-014 senza dipendere da siti esterni.">
+  <meta property="og:title" content="Fixture SEO stabile per WDC-014">
+  <meta property="og:description" content="Fixture SEO deterministica per validare in modo stabile gli stati healthy e issues_found del workflow WDC-014 senza dipendere da siti esterni.">
+  <link id="canonical" rel="canonical" href="https://jazzy-clafoutis-898ba6.netlify.app/test-fixtures/seo-state.html?mode=healthy">
+  <script>
+    (() => {
+      const canonical = document.getElementById('canonical');
+      if (canonical) canonical.href = location.href.split('#')[0];
+    })();
+  </script>
+</head>
+<body>
+  <main>
+    <h1 id="main-title">Fixture SEO deterministica WDC-014</h1>
+    <p>Questa pagina sintetica serve esclusivamente per verificare in modo ripetibile il comportamento del monitoraggio SEO WDC-014. Il contenuto è volutamente semplice, stabile e privo di dipendenze esterne, così ogni scansione produce risultati confrontabili nel tempo e permette di distinguere chiaramente un esito sano da un esito con problemi tecnici rilevati.</p>
+    <p>Nella modalità healthy la pagina espone un titolo con lunghezza adeguata, una meta description completa, un solo H1, un canonical coerente con l’indirizzo richiesto, attributo lang, viewport e metadati Open Graph essenziali. Il testo supera inoltre la soglia minima usata dallo scanner, non contiene immagini senza alt, contenuti misti, parametri eccessivi o marcature noindex.</p>
+    <p>La stessa fixture può essere richiamata con il parametro mode uguale a issues. In quel caso uno script rimuove intenzionalmente il title e l’H1 principale. Questo crea problemi SEO tecnici deterministici senza rendere la pagina irraggiungibile, consentendo di verificare che il workflow Odoo trasformi correttamente il risultato in issues_found e aggiorni il task esistente senza crearne duplicati.</p>
+    <p>Questa pagina non rappresenta un contenuto destinato al pubblico e non deve essere interpretata come una pagina reale del sito. È soltanto un riferimento tecnico di regressione per controllare stabilità, idempotenza, transizioni di stato e gestione delle scadenze del Business OS.</p>
+  </main>
+  <script>
+    (() => {
+      const mode = new URLSearchParams(location.search).get('mode') || 'healthy';
+      if (mode === 'issues') {
+        const title = document.querySelector('title');
+        if (title) title.remove();
+        const h1 = document.getElementById('main-title');
+        if (h1) h1.remove();
+      }
+    })();
+  </script>
+</body>
+</html>
