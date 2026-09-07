@@ -145,6 +145,8 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
   const browser = await launchBrowser();
 
   const pages = [];
+  const aliases = [];
+  const canonicalSeen = new Map();
   const queue = [{ url:start, depth:0, source:'start' }];
   const seen = new Set([start]);
   const inbound = new Map([[start, 0]]);
@@ -153,7 +155,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
 
   try {
     const context = await browser.newContext({
-      userAgent: 'ciro-seo-scanner/0.1 (+WDC-014)',
+      userAgent: 'ciro-seo-scanner/0.2 (+WDC-014)',
       viewport: { width:1366, height:900 },
       ignoreHTTPSErrors:false,
     });
@@ -232,7 +234,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
           continue;
         }
 
-        rec.final_url = page.url();
+        rec.final_url = normalizeSeoUrl(page.url(), page.url()) || page.url();
         rec.http_status = response?.status() ?? null;
         if (rec.http_status != null && rec.http_status >= 400) rec.error = `HTTP ${rec.http_status}`;
 
@@ -253,6 +255,27 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
           rec.meta_description_length = rec.meta_description.length;
           rec.url_length = rec.final_url.length;
           rec.query_param_count = new URL(rec.final_url).searchParams.size;
+          rec.canonical_normalized = rec.canonical ? normalizeSeoUrl(rec.canonical, rec.final_url) : '';
+          rec.canonical_key = rec.canonical_normalized && sameOrigin(rec.canonical_normalized, start)
+            ? rec.canonical_normalized
+            : rec.final_url;
+
+          const prior = canonicalSeen.get(rec.canonical_key);
+          if (prior && prior !== rec.final_url) {
+            aliases.push({
+              url:rec.final_url,
+              canonical:rec.canonical_key,
+              duplicate_of:prior,
+              http_status:rec.http_status,
+              source:rec.source,
+              depth:rec.depth,
+            });
+            const aliasInbound = inbound.get(rec.final_url) || 0;
+            if (aliasInbound) inbound.set(rec.canonical_key, (inbound.get(rec.canonical_key) || 0) + aliasInbound);
+            onProgress({url:current,status:'alias',canonical:rec.canonical_key,pages:pages.length,queued:queue.length});
+            continue;
+          }
+          canonicalSeen.set(rec.canonical_key, rec.final_url);
 
           const normalizedLinks = [];
           let external = 0;
@@ -262,7 +285,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
             if (!sameOrigin(n, start)) { external++; continue; }
             normalizedLinks.push(n);
             inbound.set(n, (inbound.get(n) || 0) + 1);
-            if (!seen.has(n) && seen.size < maxPages * 8) {
+            if (!seen.has(n) && seen.size < maxPages * 10) {
               try { await validatePublicHttpUrl(n); } catch { continue; }
               seen.add(n);
               queue.push({
@@ -289,13 +312,18 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
     await browser.close().catch(()=>{});
   }
 
-  for (const p of pages) p.inbound_links = inbound.get(p.final_url || p.url) || 0;
+  for (const p of pages) {
+    const direct = inbound.get(p.final_url || p.url) || 0;
+    const canonical = p.canonical_key || p.final_url || p.url;
+    p.inbound_links = Math.max(direct, inbound.get(canonical) || 0);
+  }
 
   return {
     scan_mode:'crawl',
     start_url:start,
     max_pages:maxPages,
     pages,
+    aliases,
     robots,
     sitemap,
   };
