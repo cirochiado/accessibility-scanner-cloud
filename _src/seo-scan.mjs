@@ -5,6 +5,16 @@ import { createPublicRequestGuard, validatePublicHttpUrl } from './security.mjs'
 const SKIP_EXT = /\.(pdf|jpe?g|png|gif|webp|svg|ico|zip|rar|7z|mp[34]|avi|mov|docx?|xlsx?|pptx?|csv|txt|xml|json)(\?|$)/i;
 const STRIP_PARAMS = new Set(['utm_source','utm_medium','utm_campaign','utm_term','utm_content','fbclid','gclid','msclkid','_ga']);
 
+function withTimeout(promise, ms, label='operation') {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 export function normalizeSeoUrl(raw, base) {
   try {
     const u = new URL(raw, base);
@@ -81,8 +91,21 @@ async function fetchTextDocument(context, url, timeout=15000) {
   try {
     const response = await page.goto(url, { waitUntil:'domcontentloaded', timeout });
     const status = response?.status() ?? null;
-    const text = response ? await response.text().catch(()=> '') : '';
-    return { url: page.url(), status, text, error: status && status >= 400 ? `HTTP ${status}` : null };
+    let text = '';
+    let bodyError = null;
+    if (response) {
+      try {
+        text = await withTimeout(response.text(), 8000, 'response_body');
+      } catch (e) {
+        bodyError = String(e?.message || e).slice(0,350);
+      }
+    }
+    return {
+      url: page.url(),
+      status,
+      text,
+      error: status && status >= 400 ? `HTTP ${status}` : bodyError,
+    };
   } catch (e) {
     return { url, status:null, text:'', error:String(e?.message || e).slice(0,350) };
   } finally {
@@ -138,10 +161,11 @@ async function extractPageSeo(page) {
 export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
   const start = normalizeSeoUrl(url, url);
   if (!start) throw new Error('URL non valido');
-  await validatePublicHttpUrl(start);
+  await withTimeout(validatePublicHttpUrl(start), 8000, 'start_url_validation');
 
   const hardMax = Math.max(1, Math.min(30, Number(process.env.SEO_MAX_PAGES || 12)));
   const maxPages = Math.max(1, Math.min(hardMax, Number(max_pages || 12)));
+  onProgress({url:start,status:'preflight',pages:0,queued:1});
   const browser = await launchBrowser();
 
   const pages = [];
@@ -163,6 +187,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
 
     const origin = new URL(start).origin;
     const robotsUrl = `${origin}/robots.txt`;
+    onProgress({url:robotsUrl,status:'robots',pages:0,queued:queue.length});
     const robotsRes = await fetchTextDocument(context, robotsUrl);
     const parsedRobots = parseRobots(robotsRes.text);
     robots = {
@@ -181,7 +206,8 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
 
     for (const smUrl of uniqueSitemaps) {
       if (!sameOrigin(smUrl, start)) continue;
-      try { await validatePublicHttpUrl(smUrl); } catch { continue; }
+      onProgress({url:smUrl,status:'sitemap',pages:0,queued:queue.length});
+      try { await withTimeout(validatePublicHttpUrl(smUrl), 8000, 'sitemap_url_validation'); } catch { continue; }
       const res = await fetchTextDocument(context, smUrl);
       sitemap.checked_urls.push({ url:smUrl, status:res.status, error:res.error });
       if (!res.error && res.text) {
@@ -212,6 +238,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
     while (queue.length && pages.length < maxPages) {
       const item = queue.shift();
       const current = item.url;
+      onProgress({url:current,status:'loading',pages:pages.length,queued:queue.length});
       const page = await context.newPage();
       const rec = {
         url: current,
@@ -230,7 +257,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
         } catch (e) {
           rec.error = `Navigazione fallita: ${String(e?.message || e).slice(0,400)}`;
           pages.push(rec);
-          onProgress({url:current,status:'failed',error:rec.error});
+          onProgress({url:current,status:'failed',pages:pages.length,queued:queue.length,error:rec.error});
           continue;
         }
 
@@ -238,7 +265,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
         rec.http_status = response?.status() ?? null;
         if (rec.http_status != null && rec.http_status >= 400) rec.error = `HTTP ${rec.http_status}`;
 
-        try { await validatePublicHttpUrl(rec.final_url); }
+        try { await withTimeout(validatePublicHttpUrl(rec.final_url), 8000, 'final_url_validation'); }
         catch (e) { rec.error = `Redirect/destinazione rifiutata: ${e.message}`; }
 
         const contentType = String(await response?.headerValue('content-type').catch(()=> '') || '');
@@ -286,7 +313,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
             normalizedLinks.push(n);
             inbound.set(n, (inbound.get(n) || 0) + 1);
             if (!seen.has(n) && seen.size < maxPages * 10) {
-              try { await validatePublicHttpUrl(n); } catch { continue; }
+              try { await withTimeout(validatePublicHttpUrl(n), 8000, 'internal_url_validation'); } catch { continue; }
               seen.add(n);
               queue.push({
                 url:n,
