@@ -86,31 +86,80 @@ function parseSitemapUrls(xml='') {
   return [...new Set(out)];
 }
 
-async function fetchTextDocument(context, url, timeout=15000) {
-  const page = await context.newPage();
-  try {
-    const response = await page.goto(url, { waitUntil:'domcontentloaded', timeout });
-    const status = response?.status() ?? null;
-    let text = '';
-    let bodyError = null;
-    if (response) {
-      try {
-        text = await withTimeout(response.text(), 8000, 'response_body');
-      } catch (e) {
-        bodyError = String(e?.message || e).slice(0,350);
-      }
+function looksLikeSitemapIndex(xml='') {
+  return /<sitemapindex\b/i.test(String(xml));
+}
+
+async function safeFetchText(url, {
+  timeout=8000,
+  maxRedirects=3,
+  maxBytes=8*1024*1024,
+} = {}) {
+  let current = normalizeSeoUrl(url, url);
+  if (!current) return { url, status:null, text:'', error:'URL non valido' };
+
+  for (let hop=0; hop<=maxRedirects; hop++) {
+    try {
+      await withTimeout(validatePublicHttpUrl(current), timeout, 'direct_fetch_url_validation');
+    } catch (e) {
+      return { url:current, status:null, text:'', error:String(e?.message || e).slice(0,350) };
     }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    let response;
+    try {
+      response = await fetch(current, {
+        method:'GET',
+        redirect:'manual',
+        signal:controller.signal,
+        headers:{
+          'user-agent':'ciro-seo-scanner/0.3 (+WDC-014)',
+          'accept':'text/plain, application/xml, text/xml, application/xhtml+xml, */*',
+        },
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      return { url:current, status:null, text:'', error:String(e?.message || e).slice(0,350) };
+    }
+    clearTimeout(timer);
+
+    const status = response.status;
+    if (status >= 300 && status < 400) {
+      const location = response.headers.get('location');
+      if (!location) return { url:current, status, text:'', error:`HTTP ${status} senza Location` };
+      const next = normalizeSeoUrl(location, current);
+      if (!next) return { url:current, status, text:'', error:'Redirect non valido' };
+      current = next;
+      continue;
+    }
+
+    const length = Number(response.headers.get('content-length') || 0);
+    if (Number.isFinite(length) && length > maxBytes) {
+      return { url:current, status, text:'', error:`Documento troppo grande (${length} byte)` };
+    }
+
+    let text='';
+    let bodyError=null;
+    try {
+      text = await withTimeout(response.text(), timeout, 'direct_fetch_body');
+      if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+        bodyError=`Documento troppo grande (>${maxBytes} byte)`;
+        text='';
+      }
+    } catch (e) {
+      bodyError=String(e?.message || e).slice(0,350);
+    }
+
     return {
-      url: page.url(),
+      url:current,
       status,
       text,
-      error: status && status >= 400 ? `HTTP ${status}` : bodyError,
+      error:status >= 400 ? `HTTP ${status}` : bodyError,
     };
-  } catch (e) {
-    return { url, status:null, text:'', error:String(e?.message || e).slice(0,350) };
-  } finally {
-    await page.close().catch(()=>{});
   }
+
+  return { url:current, status:null, text:'', error:'Troppi redirect' };
 }
 
 async function extractPageSeo(page) {
@@ -179,7 +228,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
 
   try {
     const context = await browser.newContext({
-      userAgent: 'ciro-seo-scanner/0.2 (+WDC-014)',
+      userAgent: 'ciro-seo-scanner/0.3 (+WDC-014)',
       viewport: { width:1366, height:900 },
       ignoreHTTPSErrors:false,
     });
@@ -188,7 +237,7 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
     const origin = new URL(start).origin;
     const robotsUrl = `${origin}/robots.txt`;
     onProgress({url:robotsUrl,status:'robots',pages:0,queued:queue.length});
-    const robotsRes = await fetchTextDocument(context, robotsUrl);
+    const robotsRes = await safeFetchText(robotsUrl, { timeout:8000, maxBytes:1024*1024 });
     const parsedRobots = parseRobots(robotsRes.text);
     robots = {
       url: robotsUrl,
@@ -202,30 +251,51 @@ export async function runSeoScan({ url, max_pages=12, onProgress=()=>{} }) {
       ...parsedRobots.sitemaps,
       `${origin}/sitemap.xml`,
     ].map(x => normalizeSeoUrl(x, start)).filter(Boolean);
-    const uniqueSitemaps = [...new Set(sitemapCandidates)].slice(0,3);
 
-    for (const smUrl of uniqueSitemaps) {
-      if (!sameOrigin(smUrl, start)) continue;
-      onProgress({url:smUrl,status:'sitemap',pages:0,queued:queue.length});
-      try { await withTimeout(validatePublicHttpUrl(smUrl), 8000, 'sitemap_url_validation'); } catch { continue; }
-      const res = await fetchTextDocument(context, smUrl);
+    const sitemapQueue = [...new Set(sitemapCandidates)]
+      .filter(x => sameOrigin(x, start))
+      .map(x => ({url:x, depth:0}));
+    const sitemapSeen = new Set();
+    const maxSitemapDocuments = 6;
+
+    while (sitemapQueue.length && sitemap.checked_urls.length < maxSitemapDocuments && sitemap.urls.length < 500) {
+      const item = sitemapQueue.shift();
+      const smUrl = item.url;
+      if (sitemapSeen.has(smUrl)) continue;
+      sitemapSeen.add(smUrl);
+
+      onProgress({url:smUrl,status:item.depth ? 'sitemap_child' : 'sitemap',pages:0,queued:sitemapQueue.length});
+      const res = await safeFetchText(smUrl, { timeout:8000, maxBytes:8*1024*1024 });
       sitemap.checked_urls.push({ url:smUrl, status:res.status, error:res.error });
-      if (!res.error && res.text) {
-        const urls = parseSitemapUrls(res.text)
-          .map(x => normalizeSeoUrl(x, start))
-          .filter(x => x && sameOrigin(x, start) && !SKIP_EXT.test(x));
-        if (urls.length) {
+      if (res.error || !res.text) continue;
+
+      const locs = parseSitemapUrls(res.text)
+        .map(x => normalizeSeoUrl(x, start))
+        .filter(x => x && sameOrigin(x, start));
+
+      if (looksLikeSitemapIndex(res.text)) {
+        for (const child of locs) {
+          if (item.depth >= 1) break;
+          if (!sitemapSeen.has(child) && /\.xml(\?|$)/i.test(child)) {
+            sitemapQueue.push({url:child, depth:item.depth + 1});
+          }
+          if (sitemapQueue.length >= maxSitemapDocuments * 2) break;
+        }
+      } else if (locs.length) {
+        const pageUrls = locs.filter(x => !SKIP_EXT.test(x));
+        if (pageUrls.length) {
           sitemap.status = res.status;
-          sitemap.urls = [...new Set([...sitemap.urls, ...urls])].slice(0,500);
+          sitemap.urls = [...new Set([...sitemap.urls, ...pageUrls])].slice(0,500);
         }
       }
     }
+
     if (!sitemap.checked_urls.length) {
       sitemap.error = 'Nessuna sitemap verificabile';
     } else if (!sitemap.urls.length) {
       const ok = sitemap.checked_urls.find(x => x.status && x.status < 400);
       sitemap.status = ok?.status ?? sitemap.checked_urls[0]?.status ?? null;
-      sitemap.error = ok ? 'Sitemap raggiungibile ma nessuna URL <loc> estratta' : 'Sitemap non disponibile';
+      sitemap.error = ok ? 'Sitemap raggiungibile ma nessuna URL pagina estratta' : 'Sitemap non disponibile';
     }
 
     for (const smPage of sitemap.urls.slice(0, Math.max(0, Math.floor(maxPages / 3)))) {
