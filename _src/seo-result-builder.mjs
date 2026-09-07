@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 export const SEO_RESULT_SCHEMA = 'wdc014.seo-result.v1';
-export const SEO_SCANNER_VERSION = '0.1.0-netlify';
+export const SEO_SCANNER_VERSION = '0.2.0-netlify';
 
 const SEVERITY_WEIGHT = { critical:30, high:12, medium:5, low:2 };
 const STATUS = {
@@ -50,10 +50,26 @@ function groupIssues(rows) {
   });
 }
 
-function duplicates(pages, field) {
-  const map = new Map();
+function canonicalIdentity(p) {
+  return String(p.canonical_key || p.canonical_normalized || p.final_url || p.url || '').trim();
+}
+
+function uniqueCanonicalPages(pages) {
+  const seen = new Set();
+  const out = [];
   for (const p of pages) {
     if (p.error) continue;
+    const key = canonicalIdentity(p);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+function duplicates(pages, field) {
+  const map = new Map();
+  for (const p of uniqueCanonicalPages(pages)) {
     const v = String(p[field] || '').trim().toLowerCase();
     if (!v) continue;
     const arr = map.get(v) || [];
@@ -133,7 +149,11 @@ function analyze(scan) {
         if (new URL(canonical).origin !== new URL(scan.start_url).origin) {
           addIssue(issues,{id:'cross-origin-canonical',type:'review',severity:'high',url,message:'Canonical punta a un dominio differente.',evidence:{canonical}});
         } else if (canonical !== p.final_url) {
-          addIssue(issues,{id:'canonical-mismatch',type:'review',severity:'medium',url,message:'Canonical diverso dalla URL analizzata; verificare che sia intenzionale.',evidence:{canonical}});
+          addIssue(issues,{
+            id:'canonical-alternate-url',type:'review',severity:'low',url,
+            message:'URL analizzata diversa dal canonical; verificare coerenza tra link interni, sitemap e URL preferita.',
+            evidence:{canonical}
+          });
         }
       } catch {
         addIssue(issues,{id:'invalid-canonical',type:'technical',severity:'medium',url,message:'Canonical non valido.',evidence:{canonical:p.canonical}});
@@ -186,10 +206,18 @@ function analyze(scan) {
     }
   }
 
+  for (const alias of scan.aliases || []) {
+    addIssue(issues,{
+      id:'canonical-alias-accessible',type:'review',severity:'low',url:alias.url,
+      message:'URL alternativa raggiungibile con HTTP 200 e canonical verso un’altra URL; verificare che sia una scelta intenzionale.',
+      evidence:{canonical:alias.canonical,duplicate_of:alias.duplicate_of,http_status:alias.http_status},
+    });
+  }
+
   for (const [value,urls] of duplicates(pages,'title')) {
     for (const url of urls) addIssue(issues,{
       id:'duplicate-title',type:'technical',severity:'medium',url,
-      message:`Title duplicato su ${urls.length} pagine.`,
+      message:`Title duplicato su ${urls.length} pagine canonicalmente distinte.`,
       evidence:{value,urls},
     });
   }
@@ -197,7 +225,7 @@ function analyze(scan) {
   for (const [value,urls] of duplicates(pages,'meta_description')) {
     for (const url of urls) addIssue(issues,{
       id:'duplicate-meta-description',type:'opportunity',severity:'low',url,
-      message:`Meta description duplicata su ${urls.length} pagine.`,
+      message:`Meta description duplicata su ${urls.length} pagine canonicalmente distinte.`,
       evidence:{value,urls},
     });
   }
@@ -222,8 +250,8 @@ function analyze(scan) {
   return issues;
 }
 
-function buildText(groups, type) {
-  const selected = groups.filter(g => type.includes(g.type));
+function buildText(groups, types) {
+  const selected = groups.filter(g => types.includes(g.type));
   if (!selected.length) return '- Nessun elemento rilevato.';
   return selected.slice(0,20).map(g =>
     `- [${g.severity.toUpperCase()}][${g.id}] ${g.occurrences} occorrenza/e su ${g.urls.length || 1} URL`
@@ -233,9 +261,10 @@ function buildText(groups, type) {
 export function buildSeoResult({jobId,externalRef=null,scan,previousResult=null,baseUrl}) {
   const issues = analyze(scan);
   const groups = groupIssues(issues);
+  const scoreableGroups = groups.filter(g=>g.type!=='review');
 
   let penalty = 0;
-  for (const g of groups) {
+  for (const g of scoreableGroups) {
     const perRule = Math.min(
       g.severity === 'critical' ? 40 : g.severity === 'high' ? 24 : g.severity === 'medium' ? 12 : 6,
       (SEVERITY_WEIGHT[g.severity] || 2) * Math.min(g.occurrences,3)
@@ -266,24 +295,29 @@ export function buildSeoResult({jobId,externalRef=null,scan,previousResult=null,
     };
   }
 
-  const technicalGroups = groups.filter(g=>g.type==='technical' || g.type==='review');
+  const technicalGroups = groups.filter(g=>g.type==='technical');
+  const reviewGroups = groups.filter(g=>g.type==='review');
   const opportunityGroups = groups.filter(g=>g.type==='opportunity');
-  const technicalText = buildText(groups,['technical','review']);
+  const technicalText = buildText(groups,['technical']);
+  const reviewText = buildText(groups,['review']);
   const opportunitiesText = buildText(groups,['opportunity']);
 
   const recs=[];
   if (groups.some(g=>g.severity==='critical')) recs.push('- Correggere o confermare prima gli elementi critical che possono impedire o alterare l’indicizzazione.');
-  if (groups.some(g=>g.severity==='high')) recs.push('- Correggere i problemi tecnici high prima delle ottimizzazioni on-page.');
+  if (technicalGroups.some(g=>g.severity==='high')) recs.push('- Correggere i problemi tecnici high prima delle ottimizzazioni on-page.');
+  if (reviewGroups.length) recs.push('- Confermare manualmente gli elementi di review prima di considerarli errori SEO: canonical, noindex e casi contestuali possono essere intenzionali.');
   if (opportunityGroups.length) recs.push('- Valutare le opportunità on-page in base alla funzione reale di ogni pagina; non applicare automaticamente limiti di lunghezza come regole assolute.');
   if (!scan.sitemap?.urls?.length) recs.push('- Verificare la presenza e la correttezza della sitemap XML.');
   recs.push('- Per opportunità keyword/CTR/posizionamento servono dati reali di Google Search Console; questo scanner non inventa volumi o keyword.');
 
   const auditHash=stableHash({
     schema:SEO_RESULT_SCHEMA,
+    scanner:SEO_SCANNER_VERSION,
     url:baseUrl,
     status,
     score,
     pages:pageUrls,
+    aliases:scan.aliases || [],
     groups:groups.map(g=>({id:g.id,type:g.type,severity:g.severity,occurrences:g.occurrences,urls:g.urls})),
   });
   const odoo=STATUS[status] || STATUS.opportunities;
@@ -304,7 +338,9 @@ export function buildSeoResult({jobId,externalRef=null,scan,previousResult=null,
     summary:{
       status,score,
       audited_pages:scan.pages.length,
+      canonical_aliases_detected:(scan.aliases || []).length,
       technical_issue_rules:technicalGroups.length,
+      review_rules:reviewGroups.length,
       opportunity_rules:opportunityGroups.length,
       total_issue_occurrences:issues.length,
       robots:scan.robots,
@@ -317,6 +353,7 @@ export function buildSeoResult({jobId,externalRef=null,scan,previousResult=null,
       seo_score:score,
       last_audit_at:now,
       technical_issues_text:technicalText,
+      review_text:reviewText,
       opportunities_text:opportunitiesText,
       recommendations_text:recs.join('\n'),
       report_path:`/api/v1/seo/reports/${jobId}`,
@@ -325,19 +362,21 @@ export function buildSeoResult({jobId,externalRef=null,scan,previousResult=null,
     },
     issues:{
       technical:technicalGroups,
+      review:reviewGroups,
       opportunities:opportunityGroups,
       all:groups,
     },
     diff,
     details:{
       pages:scan.pages,
+      aliases:scan.aliases || [],
       robots:scan.robots,
       sitemap:scan.sitemap,
       issue_rows:issues,
       issue_fingerprints:[...currentFp],
       page_urls:pageUrls,
     },
-    methodology:'Playwright Chromium crawl + controlli SEO tecnici/on-page deterministici; non include dati Search Console, ranking, volumi keyword o certificazioni SEO.',
+    methodology:'Playwright Chromium crawl + controlli SEO tecnici/on-page deterministici; review contestuali separate dal punteggio; non include dati Search Console, ranking o volumi keyword.',
     audit_hash:auditHash,
     generated_at:now,
     report:{
@@ -347,10 +386,10 @@ export function buildSeoResult({jobId,externalRef=null,scan,previousResult=null,
   };
 }
 
-function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function esc(s){return String(s??'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));}
 
 export function buildSeoHtmlReport(result) {
   const groups=result.issues?.all || [];
   const pages=result.details?.pages || [];
-  return `<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SEO Audit — ${esc(result.url)}</title><style>body{font-family:system-ui,sans-serif;max-width:1180px;margin:40px auto;padding:0 20px;color:#172033}h1,h2{color:#0b1739}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.metric,.card{border:1px solid #dfe5ef;border-radius:12px;padding:16px}.card{margin:18px 0}table{border-collapse:collapse;width:100%}th,td{text-align:left;border-bottom:1px solid #e7ebf2;padding:9px;vertical-align:top}pre{white-space:pre-wrap;background:#f7f9fc;padding:14px;border-radius:8px}.muted{color:#667085}</style></head><body><h1>SEO Audit automatico</h1><p class="muted">Scanner ${esc(result.scanner_version)} · ${esc(result.generated_at)}</p><div class="grid"><div class="metric"><b>Stato</b><br>${esc(result.status)}</div><div class="metric"><b>SEO Score</b><br>${esc(result.score)}/100</div><div class="metric"><b>Pagine</b><br>${result.audited_pages}</div><div class="metric"><b>Regole tecniche/review</b><br>${result.summary.technical_issue_rules}</div><div class="metric"><b>Opportunità</b><br>${result.summary.opportunity_rules}</div></div><div class="card"><h2>Problemi e opportunità</h2><table><thead><tr><th>Regola</th><th>Tipo</th><th>Severità</th><th>Occorrenze</th><th>URL</th></tr></thead><tbody>${groups.map(g=>`<tr><td>${esc(g.id)}</td><td>${esc(g.type)}</td><td>${esc(g.severity)}</td><td>${g.occurrences}</td><td>${g.urls.slice(0,4).map(esc).join('<br>')}</td></tr>`).join('')||'<tr><td colspan="5">Nessun problema/opportunità automatico rilevato</td></tr>'}</tbody></table></div><div class="card"><h2>Pagine analizzate</h2><table><thead><tr><th>URL</th><th>HTTP</th><th>Title</th><th>H1</th><th>Words</th><th>Index</th></tr></thead><tbody>${pages.map(p=>`<tr><td>${esc(p.final_url||p.url)}</td><td>${esc(p.http_status??'')}</td><td>${esc(p.title||'')}</td><td>${esc(p.h1_count??'')}</td><td>${esc(p.word_count??'')}</td><td>${p.noindex?'noindex':'index'}</td></tr>`).join('')}</tbody></table></div><div class="card"><h2>Problemi tecnici / review</h2><pre>${esc(result.wdc014.technical_issues_text)}</pre></div><div class="card"><h2>Opportunità</h2><pre>${esc(result.wdc014.opportunities_text)}</pre></div><div class="card"><h2>Azioni consigliate</h2><pre>${esc(result.wdc014.recommendations_text)}</pre></div><p class="muted">${esc(result.methodology)}</p></body></html>`;
+  return `<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SEO Audit — ${esc(result.url)}</title><style>body{font-family:system-ui,sans-serif;max-width:1180px;margin:40px auto;padding:0 20px;color:#172033}h1,h2{color:#0b1739}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.metric,.card{border:1px solid #dfe5ef;border-radius:12px;padding:16px}.card{margin:18px 0}table{border-collapse:collapse;width:100%}th,td{text-align:left;border-bottom:1px solid #e7ebf2;padding:9px;vertical-align:top}pre{white-space:pre-wrap;background:#f7f9fc;padding:14px;border-radius:8px}.muted{color:#667085}</style></head><body><h1>SEO Audit automatico</h1><p class="muted">Scanner ${esc(result.scanner_version)} · ${esc(result.generated_at)}</p><div class="grid"><div class="metric"><b>Stato</b><br>${esc(result.status)}</div><div class="metric"><b>SEO Score</b><br>${esc(result.score)}/100</div><div class="metric"><b>Pagine</b><br>${result.audited_pages}</div><div class="metric"><b>Problemi tecnici</b><br>${result.summary.technical_issue_rules}</div><div class="metric"><b>Review</b><br>${result.summary.review_rules}</div><div class="metric"><b>Opportunità</b><br>${result.summary.opportunity_rules}</div></div><div class="card"><h2>Problemi, review e opportunità</h2><table><thead><tr><th>Regola</th><th>Tipo</th><th>Severità</th><th>Occorrenze</th><th>URL</th></tr></thead><tbody>${groups.map(g=>`<tr><td>${esc(g.id)}</td><td>${esc(g.type)}</td><td>${esc(g.severity)}</td><td>${g.occurrences}</td><td>${g.urls.slice(0,4).map(esc).join('<br>')}</td></tr>`).join('')||'<tr><td colspan="5">Nessun problema/opportunità automatico rilevato</td></tr>'}</tbody></table></div><div class="card"><h2>Pagine analizzate</h2><table><thead><tr><th>URL</th><th>HTTP</th><th>Title</th><th>H1</th><th>Words</th><th>Index</th></tr></thead><tbody>${pages.map(p=>`<tr><td>${esc(p.final_url||p.url)}</td><td>${esc(p.http_status??'')}</td><td>${esc(p.title||'')}</td><td>${esc(p.h1_count??'')}</td><td>${esc(p.word_count??'')}</td><td>${p.noindex?'noindex':'index'}</td></tr>`).join('')}</tbody></table></div><div class="card"><h2>Problemi tecnici</h2><pre>${esc(result.wdc014.technical_issues_text)}</pre></div><div class="card"><h2>Review manuale</h2><pre>${esc(result.wdc014.review_text)}</pre></div><div class="card"><h2>Opportunità</h2><pre>${esc(result.wdc014.opportunities_text)}</pre></div><div class="card"><h2>Azioni consigliate</h2><pre>${esc(result.wdc014.recommendations_text)}</pre></div><p class="muted">${esc(result.methodology)}</p></body></html>`;
 }
