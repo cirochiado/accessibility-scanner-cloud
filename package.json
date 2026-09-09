@@ -6,7 +6,7 @@
   "description": "Accessibility Scanner v0.7 cloud/Netlify per WDC-013",
   "scripts": {
     "test": "node --test",
-    "check": "node --check _src/cloud-scan.mjs && node --check _src/result-builder.mjs && node --check _src/storage.mjs && node --check netlify/functions/health.mjs && node --check netlify/functions/scans.mjs && node --check netlify/functions/job.mjs && node --check netlify/functions/scan-worker.mjs && node --check netlify/functions/report.mjs && node --check netlify/functions/report-pdf.mjs"
+    "check": "node --check _src/cloud-scan.mjs && node --check _src/performance-scan.mjs && node --check _src/result-builder.mjs && node --check _src/storage.mjs && node --check netlify/functions/health.mjs && node --check netlify/functions/scans.mjs && node --check netlify/functions/job.mjs && node --check netlify/functions/scan-worker.mjs && node --check netlify/functions/performance.mjs && node --check netlify/functions/report.mjs && node --check netlify/functions/report-pdf.mjs"
   },
   "dependencies": {
     "@axe-core/playwright": "4.13.0",
