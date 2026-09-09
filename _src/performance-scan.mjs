@@ -16,6 +16,20 @@ export function scoreLowerBetter(value, good, poor) {
   return Math.round(50-(50*tail));
 }
 
+function metricBand(value,good,poor){
+  if(!Number.isFinite(value)||value<0) return 'missing';
+  if(value<=good) return 'good';
+  if(value<=poor) return 'needs-improvement';
+  return 'poor';
+}
+
+function scoreBand(score){
+  if(!Number.isInteger(score)) return 'missing';
+  if(score>=90) return '90-100';
+  if(score>=50) return '50-89';
+  return '0-49';
+}
+
 function weightedScore(metrics){
   const parts=[
     ['lcp_ms',30,2500,4000],
@@ -52,9 +66,14 @@ async function installSafeRouting(context){
   });
 }
 
-function buildTexts(metrics,score){
+function buildTexts(metrics,score,missingMetrics=[]){
   const issues=[];
   const opportunities=[];
+
+  if(missingMetrics.length){
+    issues.push(`- Misurazione performance incompleta: metriche mancanti ${missingMetrics.join(', ')}. Nessuno score definitivo assegnato.`);
+    opportunities.push('- Rilanciare il browser lab test: uno score definitivo richiede tutte le metriche principali disponibili nello stesso run.');
+  }
 
   if(score!==null){
     if(score<50) issues.push(`- Performance browser critica: score ${score}/100.`);
@@ -104,7 +123,7 @@ export async function runPerformanceScan({url}){
   const browser=await launchBrowser();
   try{
     const context=await browser.newContext({
-      userAgent:'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36 WDC018/0.1',
+      userAgent:'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36 WDC018/0.2',
       viewport:{width:390,height:844},
       deviceScaleFactor:1,
       isMobile:true,
@@ -114,8 +133,25 @@ export async function runPerformanceScan({url}){
     await installSafeRouting(context);
     const page=await context.newPage();
 
+    const cdp=await context.newCDPSession(page);
+    await cdp.send('Network.enable');
+    let encodedBytes=0;
+    let networkCompleted=0;
+    cdp.on('Network.loadingFinished',evt=>{
+      const bytes=Number(evt?.encodedDataLength||0);
+      if(Number.isFinite(bytes)&&bytes>0) encodedBytes+=bytes;
+      networkCompleted+=1;
+    });
+
     await page.addInitScript(()=>{
-      window.__wdcPerf={lcp:null,cls:0,longTasks:[]};
+      window.__wdcPerf={fcp:null,lcp:null,cls:0,longTasks:[]};
+      try{
+        new PerformanceObserver(list=>{
+          for(const e of list.getEntries()){
+            if(e.name==='first-contentful-paint') window.__wdcPerf.fcp=e.startTime;
+          }
+        }).observe({type:'paint',buffered:true});
+      }catch{}
       try{
         new PerformanceObserver(list=>{
           const entries=list.getEntries();
@@ -137,61 +173,73 @@ export async function runPerformanceScan({url}){
 
     const response=await page.goto(start,{waitUntil:'domcontentloaded',timeout:30_000});
     await page.waitForLoadState('load',{timeout:12_000}).catch(()=>{});
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
 
     const finalUrl=page.url();
     await validatePublicHttpUrl(finalUrl);
 
     const metrics=await page.evaluate(()=>{
       const nav=performance.getEntriesByType('navigation')[0]||null;
-      const fcp=performance.getEntriesByName('first-contentful-paint')[0]||null;
+      const paints=performance.getEntriesByType('paint')||[];
+      const fcpEntry=paints.find(x=>x.name==='first-contentful-paint')||null;
       const resources=performance.getEntriesByType('resource')||[];
       const p=window.__wdcPerf||{};
       const blocking=(p.longTasks||[]).reduce((sum,e)=>sum+Math.max(0,(e.duration||0)-50),0);
-      const transfer=resources.reduce((sum,e)=>sum+Number(e.transferSize||0),0);
+      const resourceTransfer=resources.reduce((sum,e)=>sum+Number(e.transferSize||0),0);
       return {
         ttfb_ms:nav?nav.responseStart:null,
-        fcp_ms:fcp?fcp.startTime:null,
+        fcp_ms:Number.isFinite(p.fcp)?p.fcp:(fcpEntry?fcpEntry.startTime:null),
         lcp_ms:Number.isFinite(p.lcp)?p.lcp:null,
         cls:Number.isFinite(p.cls)?p.cls:null,
         blocking_ms:Number.isFinite(blocking)?blocking:null,
         dom_content_loaded_ms:nav?nav.domContentLoadedEventEnd:null,
         load_ms:nav&&nav.loadEventEnd>0?nav.loadEventEnd:performance.now(),
         resource_count:resources.length,
-        transfer_kb:transfer/1024,
+        transfer_kb:resourceTransfer/1024,
       };
     });
+
+    if(networkCompleted>metrics.resource_count) metrics.resource_count=networkCompleted;
+    if(encodedBytes>0) metrics.transfer_kb=encodedBytes/1024;
 
     for(const key of Object.keys(metrics)){
       if(typeof metrics[key]==='number') metrics[key]=round(metrics[key],key==='cls'?3:1);
     }
 
-    const score=weightedScore(metrics);
-    const texts=buildTexts(metrics,score);
-    const fingerprint={
-      score,
-      ttfb_ms:metrics.ttfb_ms,
-      fcp_ms:metrics.fcp_ms,
-      lcp_ms:metrics.lcp_ms,
-      cls:metrics.cls,
-      blocking_ms:metrics.blocking_ms,
-      load_ms:metrics.load_ms,
-      resource_count:metrics.resource_count,
-      transfer_kb:metrics.transfer_kb,
+    const required=['ttfb_ms','fcp_ms','lcp_ms','cls','blocking_ms','load_ms'];
+    const missingMetrics=required.filter(key=>!Number.isFinite(metrics[key]));
+    const measurementComplete=missingMetrics.length===0;
+    const score=measurementComplete ? weightedScore(metrics) : null;
+    const texts=buildTexts(metrics,score,missingMetrics);
+
+    const semanticFingerprint={
+      complete:measurementComplete,
+      score_band:scoreBand(score),
+      ttfb:metricBand(metrics.ttfb_ms,800,1800),
+      fcp:metricBand(metrics.fcp_ms,1800,3000),
+      lcp:metricBand(metrics.lcp_ms,2500,4000),
+      cls:metricBand(metrics.cls,0.10,0.25),
+      blocking:metricBand(metrics.blocking_ms,200,600),
+      load:metricBand(metrics.load_ms,3000,6000),
+      transfer:metricBand(metrics.transfer_kb,1000,2500),
+      requests:metricBand(metrics.resource_count,60,120),
     };
 
     return {
       ok:true,
       schema_version:'wdc018.performance-result.v1',
-      scanner_version:'0.1.0-netlify',
+      scanner_version:'0.2.0-netlify',
       url:start,
       final_url:finalUrl,
       http_status:response?.status()??null,
       performance_score:score,
+      measurement_complete:measurementComplete,
+      review_required:!measurementComplete,
+      missing_metrics:missingMetrics,
       metrics,
       ...texts,
-      performance_hash:stableHash(fingerprint),
-      methodology:'Chromium/Playwright mobile viewport lab measurement. Non equivale a Google PageSpeed Insights o Lighthouse e non usa dati CrUX real-user.',
+      performance_hash:stableHash(semanticFingerprint),
+      methodology:'Chromium/Playwright mobile viewport browser-lab measurement on Netlify. Non equivale a Google PageSpeed Insights o Lighthouse, non usa dati CrUX real-user e non applica throttling di rete Lighthouse.',
       generated_at:new Date().toISOString(),
     };
   }finally{
