@@ -20,7 +20,7 @@ test('scoreLowerBetter decreases monotonically after thresholds',()=>{
 });
 
 test('scoreLowerBetter rejects invalid values',()=>{
-  assert.equal(scoreLowerBetter(null,800,1800),100); // Number(null) is not used by caller; direct null is finite coercion-safe here
+  assert.equal(scoreLowerBetter(null,800,1800),null);
   assert.equal(scoreLowerBetter(Number.NaN,800,1800),null);
   assert.equal(scoreLowerBetter(-1,800,1800),null);
 });
