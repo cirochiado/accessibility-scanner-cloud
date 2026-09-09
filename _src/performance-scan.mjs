@@ -123,7 +123,7 @@ export async function runPerformanceScan({url}){
   const browser=await launchBrowser();
   try{
     const context=await browser.newContext({
-      userAgent:'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36 WDC018/0.2',
+      userAgent:'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36 WDC018/0.3',
       viewport:{width:390,height:844},
       deviceScaleFactor:1,
       isMobile:true,
@@ -135,12 +135,44 @@ export async function runPerformanceScan({url}){
 
     const cdp=await context.newCDPSession(page);
     await cdp.send('Network.enable');
+    await cdp.send('Page.enable');
+    await cdp.send('Page.setLifecycleEventsEnabled',{enabled:true});
+    await cdp.send('PerformanceTimeline.enable',{eventTypes:['largest-contentful-paint']}).catch(()=>{});
+
     let encodedBytes=0;
     let networkCompleted=0;
+    let navInitMonotonic=null;
+    let navLoaderId=null;
+    let fcpCdpMs=null;
+    let lcpEpochSeconds=null;
+
     cdp.on('Network.loadingFinished',evt=>{
       const bytes=Number(evt?.encodedDataLength||0);
       if(Number.isFinite(bytes)&&bytes>0) encodedBytes+=bytes;
       networkCompleted+=1;
+    });
+
+    cdp.on('Page.lifecycleEvent',evt=>{
+      const ts=Number(evt?.timestamp);
+      if(evt?.name==='init' && Number.isFinite(ts) && navInitMonotonic===null){
+        navInitMonotonic=ts;
+        navLoaderId=evt.loaderId||null;
+        return;
+      }
+      if(evt?.name==='firstContentfulPaint' && Number.isFinite(ts) && Number.isFinite(navInitMonotonic)){
+        if(!navLoaderId || !evt.loaderId || evt.loaderId===navLoaderId){
+          const delta=(ts-navInitMonotonic)*1000;
+          if(Number.isFinite(delta)&&delta>=0&&delta<120000) fcpCdpMs=delta;
+        }
+      }
+    });
+
+    cdp.on('PerformanceTimeline.timelineEventAdded',payload=>{
+      const ev=payload?.event;
+      if(ev?.type!=='largest-contentful-paint') return;
+      const detail=ev.lcpDetails||{};
+      const candidate=Number(detail.renderTime||detail.loadTime||ev.time);
+      if(Number.isFinite(candidate)&&candidate>0) lcpEpochSeconds=candidate;
     });
 
     await page.addInitScript(()=>{
@@ -175,6 +207,10 @@ export async function runPerformanceScan({url}){
     await page.waitForLoadState('load',{timeout:12_000}).catch(()=>{});
     await page.waitForTimeout(3000);
 
+    // Force a compositor paint in serverless/headless Chromium before reading paint metrics.
+    await page.screenshot({type:'png'}).catch(()=>null);
+    await page.waitForTimeout(500);
+
     const finalUrl=page.url();
     await validatePublicHttpUrl(finalUrl);
 
@@ -187,6 +223,7 @@ export async function runPerformanceScan({url}){
       const blocking=(p.longTasks||[]).reduce((sum,e)=>sum+Math.max(0,(e.duration||0)-50),0);
       const resourceTransfer=resources.reduce((sum,e)=>sum+Number(e.transferSize||0),0);
       return {
+        time_origin_ms:Number(performance.timeOrigin||0),
         ttfb_ms:nav?nav.responseStart:null,
         fcp_ms:Number.isFinite(p.fcp)?p.fcp:(fcpEntry?fcpEntry.startTime:null),
         lcp_ms:Number.isFinite(p.lcp)?p.lcp:null,
@@ -198,6 +235,26 @@ export async function runPerformanceScan({url}){
         transfer_kb:resourceTransfer/1024,
       };
     });
+
+    const metricSources={
+      fcp: Number.isFinite(metrics.fcp_ms) ? 'performance-observer' : null,
+      lcp: Number.isFinite(metrics.lcp_ms) ? 'performance-observer' : null,
+    };
+
+    if(!Number.isFinite(metrics.fcp_ms) && Number.isFinite(fcpCdpMs)){
+      metrics.fcp_ms=fcpCdpMs;
+      metricSources.fcp='cdp-lifecycle';
+    }
+
+    if(!Number.isFinite(metrics.lcp_ms) && Number.isFinite(lcpEpochSeconds) && Number.isFinite(metrics.time_origin_ms)){
+      const delta=lcpEpochSeconds*1000-metrics.time_origin_ms;
+      if(Number.isFinite(delta)&&delta>=0&&delta<120000){
+        metrics.lcp_ms=delta;
+        metricSources.lcp='cdp-performance-timeline';
+      }
+    }
+
+    delete metrics.time_origin_ms;
 
     if(networkCompleted>metrics.resource_count) metrics.resource_count=networkCompleted;
     if(encodedBytes>0) metrics.transfer_kb=encodedBytes/1024;
@@ -228,7 +285,7 @@ export async function runPerformanceScan({url}){
     return {
       ok:true,
       schema_version:'wdc018.performance-result.v1',
-      scanner_version:'0.2.0-netlify',
+      scanner_version:'0.3.0-netlify',
       url:start,
       final_url:finalUrl,
       http_status:response?.status()??null,
@@ -237,9 +294,10 @@ export async function runPerformanceScan({url}){
       review_required:!measurementComplete,
       missing_metrics:missingMetrics,
       metrics,
+      metric_sources:metricSources,
       ...texts,
       performance_hash:stableHash(semanticFingerprint),
-      methodology:'Chromium/Playwright mobile viewport browser-lab measurement on Netlify. Non equivale a Google PageSpeed Insights o Lighthouse, non usa dati CrUX real-user e non applica throttling di rete Lighthouse.',
+      methodology:'Chromium/Playwright mobile viewport browser-lab measurement on Netlify. FCP/LCP use PerformanceObserver with Chrome DevTools Protocol fallbacks. Non equivale a Google PageSpeed Insights o Lighthouse, non usa dati CrUX real-user e non applica throttling di rete Lighthouse.',
       generated_at:new Date().toISOString(),
     };
   }finally{
