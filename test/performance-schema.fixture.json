@@ -1,0 +1,14 @@
+{
+  "schema_version": "wdc018.performance-result.v1",
+  "performance_score": 88,
+  "metrics": {
+    "ttfb_ms": 420,
+    "fcp_ms": 1250,
+    "lcp_ms": 2100,
+    "cls": 0.04,
+    "blocking_ms": 120,
+    "load_ms": 2900,
+    "resource_count": 58,
+    "transfer_kb": 910
+  }
+}
