@@ -3,7 +3,6 @@ import { chromium as playwrightChromium } from 'playwright-core';
 import serverlessChromium from '@sparticuz/chromium';
 import { createPublicRequestGuard, validatePublicHttpUrl } from './security.mjs';
 
-function clamp(v,min,max){return Math.max(min,Math.min(max,v));}
 function round(v,digits=0){const p=10**digits;return Math.round(v*p)/p;}
 
 export function scoreLowerBetter(value, good, poor) {
@@ -28,7 +27,8 @@ function weightedScore(metrics){
   ];
   let weighted=0,weights=0;
   for(const [key,w,good,poor] of parts){
-    const s=scoreLowerBetter(Number(metrics[key]),good,poor);
+    const raw=metrics[key];
+    const s=scoreLowerBetter(typeof raw==='number' ? raw : Number.NaN,good,poor);
     if(s===null) continue;
     weighted+=s*w;weights+=w;
   }
@@ -104,7 +104,7 @@ export async function runPerformanceScan({url}){
   const browser=await launchBrowser();
   try{
     const context=await browser.newContext({
-      userAgent:'wdc018-performance/0.1 (+Web Developer Ciro)',
+      userAgent:'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36 WDC018/0.1',
       viewport:{width:390,height:844},
       deviceScaleFactor:1,
       isMobile:true,
