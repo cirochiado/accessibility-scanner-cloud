@@ -1,0 +1,85 @@
+# Accessibility Scanner Cloud
+
+A serverless website-analysis project focused on **accessibility, technical SEO and performance checks**.
+
+The project was built as a cloud evolution of a locally validated scanner, with asynchronous jobs, browser-based analysis, structured results and downloadable reports.
+
+## What it does
+
+The scanner can analyse a single URL or crawl multiple pages and produce structured results for:
+
+- accessibility issues
+- technical SEO checks
+- page metadata and crawl signals
+- browser-based behavioural checks
+- internal performance metrics
+- HTML / PDF reporting
+
+## Tech stack
+
+- Node.js 22+
+- JavaScript / ES modules
+- Netlify Functions
+- Netlify Background Functions
+- Netlify Blobs
+- Playwright Core
+- Chromium
+- @axe-core/playwright
+
+## Architecture
+
+### Accessibility API
+
+- `POST /api/v1/scans` — creates a scan job
+- background worker — runs Chromium, axe and behavioural checks
+- `GET /api/v1/jobs/:id` — job polling
+- structured output contract: `wdc013.a11y-result.v1`
+
+### SEO API
+
+A separate SEO pipeline uses the `wdc014.seo-result.v1` contract and keeps its crawl history and reports isolated from the accessibility workflow.
+
+### Performance API
+
+- `POST /api/v1/performance`
+- structured output contract: `wdc018.performance-result.v1`
+
+The performance scan collects signals including TTFB, FCP, LCP, CLS, long-task blocking, load time, resource count and transfer size.
+
+## Security
+
+The project includes several controls designed for safe server-side browser automation:
+
+- Bearer-token authentication for scan and polling APIs
+- separate random access keys for reports
+- private IP / URL blocking
+- browser-request filtering to reduce SSRF risk
+- isolated job and report storage
+
+## Validation approach
+
+Cloud deployments are regression-tested against the previously validated local implementation.
+
+The goal is not pixel-identical browser output across environments, but consistent detection of the main rule families, behavioural signals and technical issues.
+
+## Local checks
+
+```bash
+npm install
+npm test
+npm run check
+```
+
+The `check` command performs syntax validation across the scanner modules and Netlify functions.
+
+## Project status
+
+Current public repository version: **v0.7.x**
+
+The repository contains the Netlify cloud implementation and related documentation for accessibility, SEO and performance scanning.
+
+## Related work
+
+This project is part of a broader set of web-quality and automation tools I have been developing around website auditing, accessibility, SEO, performance and digital operations.
+
+Portfolio: https://webdeveloperciro.com
