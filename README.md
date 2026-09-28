@@ -4,6 +4,38 @@ A serverless website-analysis project focused on **accessibility, technical SEO 
 
 The project was built as a cloud evolution of a locally validated scanner, with asynchronous jobs, browser-based analysis, structured results and downloadable reports.
 
+## Quick review
+
+If you are reviewing this repository, these files show the main parts of the implementation:
+
+- [Accessibility scan engine](./_src/cloud-scan.mjs)
+- [Behavioural checks](./_src/behavior.mjs)
+- [Security / SSRF protections](./_src/security.mjs)
+- [Authentication](./_src/auth.mjs)
+- [SEO scanner](./_src/seo-scan.mjs)
+- [Performance scanner](./_src/performance-scan.mjs)
+- [Netlify serverless functions](./netlify/functions)
+- [Automated tests](./test)
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C[Client] --> API[Netlify Function API]
+    API --> JOB[Job storage / Netlify Blobs]
+    API --> BG[Background Function]
+    BG --> BROWSER[Chromium + Playwright]
+    BROWSER --> AXE[axe-core]
+    BROWSER --> SEO[SEO / behavioural checks]
+    BROWSER --> PERF[Performance checks]
+    AXE --> RESULT[Structured result]
+    SEO --> RESULT
+    PERF --> RESULT
+    RESULT --> JOB
+    JOB --> POLL[Job polling API]
+    JOB --> REPORT[HTML / PDF reports]
+```
+
 ## What it does
 
 The scanner can analyse a single URL or crawl multiple pages and produce structured results for:
@@ -26,20 +58,18 @@ The scanner can analyse a single URL or crawl multiple pages and produce structu
 - Chromium
 - @axe-core/playwright
 
-## Architecture
-
-### Accessibility API
+## Accessibility API
 
 - `POST /api/v1/scans` — creates a scan job
 - background worker — runs Chromium, axe and behavioural checks
 - `GET /api/v1/jobs/:id` — job polling
 - structured output contract: `wdc013.a11y-result.v1`
 
-### SEO API
+## SEO API
 
 A separate SEO pipeline uses the `wdc014.seo-result.v1` contract and keeps its crawl history and reports isolated from the accessibility workflow.
 
-### Performance API
+## Performance API
 
 - `POST /api/v1/performance`
 - structured output contract: `wdc018.performance-result.v1`
@@ -82,4 +112,5 @@ The repository contains the Netlify cloud implementation and related documentati
 
 This project is part of a broader set of web-quality and automation tools I have been developing around website auditing, accessibility, SEO, performance and digital operations.
 
-Portfolio: https://webdeveloperciro.com
+- Portfolio: https://webdeveloperciro.com
+- GitHub evidence overview: https://github.com/cirochiado/E-portfolio/blob/main/TECHNICAL-EVIDENCE.md
