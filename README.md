@@ -1,5 +1,7 @@
 # Accessibility Scanner Cloud
 
+[![CI](https://github.com/cirochiado/accessibility-scanner-cloud/actions/workflows/ci.yml/badge.svg)](https://github.com/cirochiado/accessibility-scanner-cloud/actions/workflows/ci.yml)
+
 A serverless website-analysis project focused on **accessibility, technical SEO and performance checks**.
 
 The project was built as a cloud evolution of a locally validated scanner, with asynchronous jobs, browser-based analysis, structured results and downloadable reports.
@@ -16,6 +18,7 @@ If you are reviewing this repository, these files show the main parts of the imp
 - [Performance scanner](./_src/performance-scan.mjs)
 - [Netlify serverless functions](./netlify/functions)
 - [Automated tests](./test)
+- [CI workflow](./.github/workflows/ci.yml)
 
 ## Architecture
 
@@ -86,13 +89,15 @@ The project includes several controls designed for safe server-side browser auto
 - browser-request filtering to reduce SSRF risk
 - isolated job and report storage
 
-## Validation approach
+## Automated validation
 
-Cloud deployments are regression-tested against the previously validated local implementation.
+Every push to `main` and every pull request runs a public GitHub Actions CI workflow that:
 
-The goal is not pixel-identical browser output across environments, but consistent detection of the main rule families, behavioural signals and technical issues.
+1. installs the project dependencies on Node.js 22
+2. runs the automated test suite
+3. performs syntax checks across the scanner modules and Netlify functions
 
-## Local checks
+Local validation uses the same commands:
 
 ```bash
 npm install
@@ -100,7 +105,11 @@ npm test
 npm run check
 ```
 
-The `check` command performs syntax validation across the scanner modules and Netlify functions.
+## Validation approach
+
+Cloud deployments are regression-tested against the previously validated local implementation.
+
+The goal is not pixel-identical browser output across environments, but consistent detection of the main rule families, behavioural signals and technical issues.
 
 ## Project status
 
